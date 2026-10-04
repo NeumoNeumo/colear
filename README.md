@@ -126,3 +126,19 @@ The production preview is available at `http://localhost:4173/colear/`.
 Tests cover background detection, nearby picking, rectangle extraction,
 transparency, highlight layers, and settings validation. No server or account is
 needed for image processing or saved preferences.
+
+## Automatic deployment
+
+The [Deploy to GitHub Pages](.github/workflows/deploy-pages.yml) workflow installs
+dependencies, runs tests, builds the site, and deploys `dist` after each push to
+`main`. You can also run it manually from the repository's **Actions** tab;
+only `main` can deploy.
+
+Before the first deployment, open **Settings → Pages → Build and deployment**
+and set **Source** to **GitHub Actions**, as described in the
+[GitHub Pages setup guide](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
+The workflow uses GitHub's built-in token, so no additional secrets are needed.
+
+The site is published at <https://neumoneumo.github.io/colear/>. Vite's
+`base: '/colear/'` setting keeps image and asset URLs under the repository path.
+Deployment status and the published URL appear in the `github-pages` environment.
