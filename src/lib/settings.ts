@@ -6,16 +6,13 @@ export interface Settings {
   scale: number;
   backgroundAuto: boolean;
   background: string;
-  textAuto: boolean;
-  text: string;
-  excludeText: boolean;
   defaultRange: number;
   ranges: Record<string, number>;
 }
 
 export const settingsKey = 'colear.settings.v1';
 export function defaults(pixelRatio = 1, dark = false): Settings {
-  return { version: 1, dark, smartPick: true, snapRadius: 8, scale: Math.min(8, Math.max(0.25, pixelRatio || 1)), backgroundAuto: true, background: '#ffffff', textAuto: false, text: '#000000', excludeText: true, defaultRange: 20, ranges: {} };
+  return { version: 1, dark, smartPick: true, snapRadius: 8, scale: Math.min(8, Math.max(0.25, pixelRatio || 1)), backgroundAuto: true, background: '#ffffff', defaultRange: 20, ranges: {} };
 }
 
 export function readSettings(raw: string | null, fallback: Settings): Settings {
@@ -24,10 +21,10 @@ export function readSettings(raw: string | null, fallback: Settings): Settings {
     const value = JSON.parse(raw);
     if (!value || value.version !== 1) return fallback;
     const result = { ...fallback, ranges: {} as Record<string, number> };
-    for (const key of ['dark', 'smartPick', 'backgroundAuto', 'textAuto', 'excludeText'] as const) {
+    for (const key of ['dark', 'smartPick', 'backgroundAuto'] as const) {
       if (typeof value[key] === 'boolean') result[key] = value[key];
     }
-    for (const key of ['background', 'text'] as const) {
+    for (const key of ['background'] as const) {
       if (typeof value[key] === 'string' && /^#[0-9a-f]{6}$/i.test(value[key])) result[key] = value[key];
     }
     for (const [key, min, max] of [['snapRadius', 1, 32], ['scale', 0.25, 8], ['defaultRange', 0, 255]] as const) {

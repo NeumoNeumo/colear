@@ -10,7 +10,7 @@ async function loadModule(path) {
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } });
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 }
-const { clusters, detectBackground, detectText, mainColors, paletteMatch, pickNearby, hex, fromHex, highlight, rectangleClusters, colorName } = await loadModule('../src/lib/colors.ts');
+const { clusters, detectBackground, mainColors, paletteMatch, pickNearby, hex, fromHex, highlightLayer, rectangleClusters, colorName } = await loadModule('../src/lib/colors.ts');
 const { defaults, readSettings } = await loadModule('../src/lib/settings.ts');
 const green = fromHex('#22aa55');
 const red = fromHex('#ee2233');
@@ -29,22 +29,21 @@ function blend(foreground, background, coverage) {
   return Object.fromEntries(['r', 'g', 'b'].map(channel => [channel, Math.round(background[channel] + coverage * (foreground[channel] - background[channel]))]));
 }
 
-test('recognizes a green background and contrasting text without grayscale filtering', () => {
+test('recognizes a green background without excluding black or grayscale lines', () => {
   const image = fixture();
   paint(image, 2, 2, 5, 5, red);
   paint(image, 10, 2, 5, 5, black);
   paint(image, 20, 2, 3, 3, fromHex('#888888'));
   assert.deepEqual(detectBackground(image), green);
-  assert.deepEqual(detectText(image, green), black);
-  const colors = clusters(image, undefined, [green, black]).map(entry => hex(entry.color));
-  assert.deepEqual(colors, ['#ee2233', '#888888']);
+  const colors = clusters(image, undefined, [green]).map(entry => hex(entry.color));
+  assert.deepEqual(colors, ['#ee2233', '#000000', '#888888']);
 });
 
-test('can estimate white text on a dark background', () => {
+test('detects white features on a dark background', () => {
   const image = fixture(40, 30, black);
   paint(image, 3, 3, 12, 3, white);
   paint(image, 20, 3, 5, 5, blue);
-  assert.deepEqual(detectText(image, black), white);
+  assert.ok(mainColors(image, [black]).some(color => hex(color) === '#ffffff'));
 });
 
 test('main colors include colored lines alongside dominant gray labels', () => {
@@ -129,13 +128,12 @@ test('palette matching selects the closest entry independently of highlight tole
   assert.equal(paletteMatch([], red), undefined);
 });
 
-test('bulk extraction stays in its rectangle and honors text exclusion', () => {
+test('bulk extraction stays in its rectangle and includes black features', () => {
   const image = fixture();
   paint(image, 2, 2, 5, 5, red);
   paint(image, 9, 2, 5, 5, black);
   paint(image, 25, 2, 5, 5, blue);
   const region = { x: 0, y: 0, width: 20, height: 10 };
-  assert.deepEqual(clusters(image, region, [green, black]).map(entry => hex(entry.color)), ['#ee2233']);
   assert.deepEqual(new Set(clusters(image, region, [green]).map(entry => hex(entry.color))), new Set(['#ee2233', '#000000']));
   assert.deepEqual(clusters(image, { x: 100, y: 100, width: 10, height: 10 }), []);
 });
@@ -156,14 +154,13 @@ test('rectangle extraction merges antialiased edge bands into solid line colors'
   }
 });
 
-test('rectangle extraction excludes antialiased text only when text exclusion is requested', () => {
+test('rectangle extraction includes black cores shared by text and lines', () => {
   const image = fixture(80, 60, white);
   for (const [offset, coverage] of [0.25, 0.5, 0.75, 1].entries()) {
     paint(image, 10 + offset, 10, 1, 40, blend(black, white, coverage));
   }
   paint(image, 30, 10, 1, 40, red);
   const region = { x: 0, y: 0, width: 80, height: 60 };
-  assert.deepEqual(rectangleClusters(image, region, [white, black]).map(entry => hex(entry.color)), [hex(red)]);
   assert.deepEqual(new Set(rectangleClusters(image, region, [white]).map(entry => hex(entry.color))), new Set([hex(red), hex(black)]));
 });
 
@@ -219,50 +216,114 @@ test('transparent pixels do not become background or palette colors', () => {
 });
 
 test('highlight ranges change matching without modifying the original pixels', () => {
-  const image = fixture(7, 1, green);
+  const image = fixture(11, 1, green);
   paint(image, 0, 0, 1, 1, red);
   paint(image, 3, 0, 1, 1, fromHex('#ee4444'));
-  paint(image, 6, 0, 1, 1, red, 0);
+  paint(image, 10, 0, 1, 1, red, 0);
   const before = image.data.slice();
-  const narrow = highlight(image, red, 0);
-  const broad = highlight(image, red, 50);
+  const narrow = highlightLayer(image, red, 0, green);
+  const broad = highlightLayer(image, red, 50, green);
   assert.equal(narrow[3], 255);
-  assert.ok(narrow[15] < 255);
+  assert.equal(narrow[15], 0);
   assert.equal(broad[15], 255);
-  assert.equal(broad[27], 0);
+  assert.equal(broad[43], 0);
   assert.deepEqual(image.data, before);
-  assert.deepEqual(highlight(image, red, 255).slice(0, 24), before.slice(0, 24));
+  assert.deepEqual(highlightLayer(image, red, 255, green).slice(0, 24), before.slice(0, 24));
 });
 
-test('dilation thickens an isolated match to exactly a 3 by 3 square', () => {
-  const image = fixture(7, 7, white);
-  paint(image, 3, 3, 1, 1, red);
-  const output = highlight(image, red, 0);
-  for (let y = 0; y < 7; y++) for (let x = 0; x < 7; x++) {
-    const i = (y * 7 + x) * 4;
-    if (x >= 2 && x <= 4 && y >= 2 && y <= 4) {
-      assert.deepEqual([...output.slice(i, i + 4)], [red.r, red.g, red.b, 255]);
-    } else assert.ok(output[i + 3] < 255, `Unexpected dilation at ${x}, ${y}`);
-  }
-  assert.deepEqual(highlight(image, red, 0), output, 'Repeated renders must not grow the highlight');
+test('highlight has a rounded outline and a smoothly fading same-color halo', () => {
+  const image = fixture(17, 17, white);
+  paint(image, 8, 8, 1, 1, red);
+  const output = highlightLayer(image, red, 0, white);
+  const alpha = (dx, dy) => output[((8 + dy) * 17 + 8 + dx) * 4 + 3];
+  assert.equal(alpha(0, 0), 255);
+  assert.ok(alpha(1, 0) > alpha(1, 1), 'Corners should be softer than axial neighbors');
+  for (let x = 0; x < 4; x++) assert.ok(alpha(x, 0) > alpha(x + 1, 0));
+  assert.equal(alpha(5, 0), 0);
+  assert.equal(alpha(1, 2), alpha(-2, -1), 'Outline should be rotationally symmetric');
+  assert.deepEqual([...output.slice((8 * 17 + 9) * 4, (8 * 17 + 9) * 4 + 3)], [red.r, red.g, red.b]);
+  assert.deepEqual(highlightLayer(image, red, 0, white), output, 'Repeated renders must not grow the highlight');
 });
 
-test('dilation clips at image borders without wrapping into adjacent rows', () => {
-  const image = fixture(5, 4, white);
-  paint(image, 4, 0, 1, 1, red);
-  const output = highlight(image, red, 0);
-  const opaque = [];
-  for (let p = 0; p < 20; p++) if (output[p * 4 + 3] === 255) opaque.push(p);
-  assert.deepEqual(opaque, [3, 4, 8, 9]);
+test('halo clips at image borders without wrapping into adjacent rows', () => {
+  const image = fixture(12, 8, white);
+  paint(image, 11, 0, 1, 1, red);
+  const output = highlightLayer(image, red, 0, white);
+  assert.ok(output[(1 * 12 + 11) * 4 + 3] > 0);
+  for (let y = 0; y < 8; y++) assert.equal(output[(y * 12) * 4 + 3], 0);
+  assert.equal(output[(7 * 12 + 11) * 4 + 3], 0);
 });
 
 test('transparent RGB does not seed dilation, while visible matches expand into transparency', () => {
   const image = fixture(7, 1, red);
   for (let i = 3; i < image.data.length; i += 4) image.data[i] = 0;
-  assert.deepEqual([...highlight(image, red, 0).filter((_, i) => i % 4 === 3)], Array(7).fill(0));
+  assert.deepEqual([...highlightLayer(image, red, 0, white).filter((_, i) => i % 4 === 3)], Array(7).fill(0));
   paint(image, 3, 0, 1, 1, red, 128);
-  const output = highlight(image, red, 0);
-  assert.deepEqual([...output.filter((_, i) => i % 4 === 3)], [0, 0, 128, 128, 128, 0, 0]);
+  const output = highlightLayer(image, red, 0, white);
+  const alpha = [...output.filter((_, i) => i % 4 === 3)];
+  assert.equal(alpha[3], 128);
+  assert.ok(alpha[0] < alpha[1] && alpha[1] < alpha[2] && alpha[2] < alpha[3]);
+  assert.deepEqual(alpha, [...alpha].reverse());
+});
+
+test('highlight layer leaves adjacent nonmatching lines uncovered and the source unchanged', () => {
+  const image = fixture(5, 3, white);
+  paint(image, 2, 1, 1, 1, red);
+  paint(image, 3, 1, 1, 1, blue);
+  const original = image.data.slice();
+  const layer = highlightLayer(image, red, 0, white);
+  assert.deepEqual([...layer.slice((1 * 5 + 3) * 4, (1 * 5 + 4) * 4)], [0, 0, 0, 0]);
+  assert.ok(layer[(1 * 5 + 1) * 4 + 3] > 0, 'Outline can cover neighboring background');
+  assert.deepEqual(image.data, original);
+});
+
+test('halo width stays consistent in CSS pixels at different display scales', () => {
+  const image = fixture(33, 33, white);
+  paint(image, 16, 16, 1, 1, red);
+  const normal = highlightLayer(image, red, 0, white, 1);
+  const hidpi = highlightLayer(image, red, 0, white, 2);
+  for (let dx = 0; dx <= 5; dx++) {
+    assert.equal(normal[(16 * 33 + 16 + dx) * 4 + 3], hidpi[(16 * 33 + 16 + dx * 2) * 4 + 3]);
+  }
+  assert.equal(hidpi[(20 * 33 + 19) * 4 + 3], hidpi[(16 * 33 + 21) * 4 + 3], 'Equal Euclidean distances have equal opacity');
+});
+
+test('multiple matches merge their halos without seams or extra opacity', () => {
+  const first = fixture(20, 17, white);
+  const second = fixture(20, 17, white);
+  const both = fixture(20, 17, white);
+  paint(first, 7, 6, 1, 1, red);
+  paint(second, 11, 10, 1, 1, red);
+  paint(both, 7, 6, 1, 1, red);
+  paint(both, 11, 10, 1, 1, red);
+  const a = highlightLayer(first, red, 0, white);
+  const b = highlightLayer(second, red, 0, white);
+  const combined = highlightLayer(both, red, 0, white);
+  for (let i = 3; i < combined.length; i += 4) assert.equal(combined[i], Math.max(a[i], b[i]));
+});
+
+test('halo supports light lines on dark backgrounds and empty selections', () => {
+  const image = fixture(12, 12, black);
+  assert.ok(highlightLayer(image, white, 0, black).every(value => value === 0));
+  paint(image, 6, 6, 1, 1, white);
+  const layer = highlightLayer(image, white, 0, black);
+  const offset = (6 * 12 + 7) * 4;
+  assert.deepEqual([...layer.slice(offset, offset + 3)], [255, 255, 255]);
+  assert.ok(layer[offset + 3] > 0 && layer[offset + 3] < 255);
+});
+
+test('outline fills adjacent antialiased edges without covering unrelated colors', () => {
+  for (const background of [white, black, green]) {
+    const image = fixture(12, 12, background);
+    paint(image, 6, 6, 1, 1, red);
+    paint(image, 5, 6, 1, 1, blend(red, background, 0.5));
+    paint(image, 7, 6, 1, 1, blue);
+    paint(image, 3, 6, 1, 1, blend(red, background, 0.5));
+    const layer = highlightLayer(image, red, 0, background);
+    assert.ok(layer[(6 * 12 + 5) * 4 + 3] > 0, 'Adjacent edge has no gap');
+    assert.equal(layer[(6 * 12 + 7) * 4 + 3], 0, 'Unrelated blue stays uncovered');
+    assert.equal(layer[(6 * 12 + 3) * 4 + 3], 0, 'A separate pale line stays uncovered');
+  }
 });
 
 test('reports useful color names and exact hex values', () => {
@@ -273,18 +334,24 @@ test('reports useful color names and exact hex values', () => {
 });
 
 test('settings preserve preferences and per-color ranges across save/load', () => {
-  const settings = { ...defaults(2, true), scale: 1.5, backgroundAuto: false, background: '#22aa55', text: '#ffffff', ranges: { '#ee2233': 61 }, excludeText: false };
+  const settings = { ...defaults(2, true), scale: 1.5, backgroundAuto: false, background: '#22aa55', ranges: { '#ee2233': 61 } };
   assert.deepEqual(readSettings(JSON.stringify(settings), defaults()), settings);
   assert.equal(defaults(2).scale, 2);
+});
+
+test('older saved settings load while retired text-color preferences are ignored', () => {
+  const settings = { ...defaults(2, true), ranges: { '#ee2233': 61 } };
+  const legacy = { ...settings, text: '#000000', textAuto: true, excludeText: true };
+  assert.deepEqual(readSettings(JSON.stringify(legacy), defaults()), settings);
 });
 
 test('corrupt or invalid settings cannot break color or scale calculations', () => {
   const fallback = defaults();
   assert.deepEqual(readSettings('{broken', fallback), fallback);
   assert.deepEqual(readSettings('null', fallback), fallback);
-  const result = readSettings(JSON.stringify({ version: 1, scale: 0, text: 'invalid', dark: 'false', snapRadius: 999, ranges: { '#123456': -10, invalid: 30 } }), fallback);
+  const result = readSettings(JSON.stringify({ version: 1, scale: 0, background: 'invalid', dark: 'false', snapRadius: 999, ranges: { '#123456': -10, invalid: 30 } }), fallback);
   assert.equal(result.scale, 0.25);
-  assert.equal(result.text, '#000000');
+  assert.equal(result.background, '#ffffff');
   assert.equal(result.dark, false);
   assert.equal(result.snapRadius, 32);
   assert.deepEqual(result.ranges, { '#123456': 0 });

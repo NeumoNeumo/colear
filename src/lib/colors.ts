@@ -178,18 +178,6 @@ export function mainColors(image: Pixels, excluded: Color[], limit = 8): Color[]
   return clusters(image, undefined, excluded).sort((a, b) => score(b) - score(a)).slice(0, limit).map(entry => entry.color);
 }
 
-export function detectText(image: Pixels, background: Color): Color {
-  const candidates = clusters(image, undefined, [background]);
-  // Prefer common neutral colors with strong contrast. Users can override this
-  // heuristic for colored text or images without any text.
-  const ranked = candidates.map(entry => {
-    const c = entry.color;
-    const neutrality = 1 - (Math.max(c.r, c.g, c.b) - Math.min(c.r, c.g, c.b)) / 255;
-    return { ...entry, score: Math.log2(entry.count + 1) * distance(c, background) * (0.2 + neutrality) };
-  }).sort((a, b) => b.score - a.score);
-  return ranked[0]?.color ?? { r: 0, g: 0, b: 0 };
-}
-
 export function pickNearby(image: Pixels, point: Point, radius: number, excluded: Color[]): { color: Color; point: Point } | null {
   const direct = pixel(image, point.x, point.y);
   if (radius <= 0) return direct ? { color: direct, point } : null;
@@ -258,39 +246,92 @@ export function pickNearby(image: Pixels, point: Point, radius: number, excluded
   return { color: result.color, point: result.point };
 }
 
-export function highlight(image: Pixels, color: Color, range: number): Uint8ClampedArray {
-  const output = new Uint8ClampedArray(image.data);
-  const mask = new Uint8Array(image.width * image.height);
-  for (let p = 0; p < mask.length; p++) {
+export function highlightLayer(image: Pixels, color: Color, range: number, background: Color, scale = 1): Uint8ClampedArray {
+  // A Euclidean distance field gives the outline round corners. Feathering its
+  // edge avoids the square steps of a max filter without blurring the source.
+  const output = new Uint8ClampedArray(image.data.length);
+  const distances = new Float64Array(image.width * image.height).fill(Infinity);
+  const owners = new Int32Array(distances.length).fill(-1);
+  let matches = 0;
+  for (let p = 0; p < distances.length; p++) {
     const i = p * 4;
     const c = { r: image.data[i], g: image.data[i + 1], b: image.data[i + 2] };
-    if (similar(c, color, range)) mask[p] = image.data[i + 3];
+    if (image.data[i + 3] && similar(c, color, range)) {
+      distances[p] = 0; owners[p] = p; matches++;
+    }
   }
+  if (!matches) return output;
 
-  // Dilate the original match mask with a 3 × 3 max filter. Keeping the mask
-  // separate prevents newly painted pixels from expanding the highlight again.
+  // Separable squared-distance transform: lower envelopes of parabolas keep
+  // this linear in image size, even with a large HiDPI display scale.
+  const size = Math.max(image.width, image.height);
+  const sites = new Int32Array(size);
+  const boundaries = new Float64Array(size + 1);
+  const costs = new Float64Array(size);
+  const sources = new Int32Array(size);
+  const transform = (start: number, stride: number, length: number) => {
+    let last = -1;
+    for (let q = 0; q < length; q++) {
+      const cost = distances[start + q * stride];
+      if (!Number.isFinite(cost)) continue;
+      let boundary = -Infinity;
+      while (last >= 0) {
+        const p = sites[last];
+        boundary = (cost + q * q - distances[start + p * stride] - p * p) / (2 * (q - p));
+        if (boundary > boundaries[last]) break;
+        last--;
+      }
+      sites[++last] = q;
+      boundaries[last] = last === 0 ? -Infinity : boundary;
+      boundaries[last + 1] = Infinity;
+    }
+    if (last < 0) return;
+    let site = 0;
+    for (let q = 0; q < length; q++) {
+      while (boundaries[site + 1] < q) site++;
+      const p = sites[site];
+      costs[q] = (q - p) ** 2 + distances[start + p * stride];
+      sources[q] = owners[start + p * stride];
+    }
+    for (let q = 0; q < length; q++) {
+      distances[start + q * stride] = costs[q];
+      owners[start + q * stride] = sources[q];
+    }
+  };
+  for (let y = 0; y < image.height; y++) transform(y * image.width, 1, image.width);
+  for (let x = 0; x < image.width; x++) transform(x, image.width, image.height);
+
+  const displayScale = Number.isFinite(scale) ? Math.max(0.25, Math.min(8, scale)) : 1;
+  const direction = { r: color.r - background.r, g: color.g - background.g, b: color.b - background.b };
+  const lengthSquared = direction.r ** 2 + direction.g ** 2 + direction.b ** 2;
   for (let i = 0; i < output.length; i += 4) {
     const p = i / 4;
-    if (mask[p]) continue;
-    const x = p % image.width;
-    const y = Math.floor(p / image.width);
-    let alpha = 0;
-    for (let row = Math.max(0, y - 1); row <= Math.min(image.height - 1, y + 1); row++) {
-      for (let col = Math.max(0, x - 1); col <= Math.min(image.width - 1, x + 1); col++) {
-        alpha = Math.max(alpha, mask[row * image.width + col]);
-      }
-    }
-    if (alpha) {
-      output[i] = color.r;
-      output[i + 1] = color.g;
-      output[i + 2] = color.b;
-      output[i + 3] = alpha;
+    if (distances[p] === 0) {
+      output[i] = image.data[i];
+      output[i + 1] = image.data[i + 1];
+      output[i + 2] = image.data[i + 2];
+      output[i + 3] = image.data[i + 3];
       continue;
     }
+    const d = Math.sqrt(distances[p]) / displayScale;
+    if (d >= 4.5) continue;
     const c = { r: image.data[i], g: image.data[i + 1], b: image.data[i + 2] };
-    const gray = Math.round(0.299 * c.r + 0.587 * c.g + 0.114 * c.b);
-    output[i] = output[i + 1] = output[i + 2] = gray;
-    output[i + 3] = Math.round(image.data[i + 3] * 0.22);
+    // Include the selected line's immediate antialiased edge; otherwise these
+    // blended pixels cut tiny holes in the outline. Unrelated lines stay clear.
+    if (image.data[i + 3] && !similar(c, background)) {
+      if (distances[p] > 2 || !lengthSquared) continue;
+      const delta = { r: c.r - background.r, g: c.g - background.g, b: c.b - background.b };
+      const coverage = (delta.r * direction.r + delta.g * direction.g + delta.b * direction.b) / lengthSquared;
+      const residual = ((delta.r - coverage * direction.r) ** 2 + (delta.g - coverage * direction.g) ** 2 + (delta.b - coverage * direction.b) ** 2) / 3;
+      if (coverage <= 0 || coverage >= 1 || residual > 16) continue;
+    }
+    const edge = Math.max(0, Math.min(1, (d - 0.4) / 1.2));
+    const outline = 0.9 * (1 - edge * edge * (3 - 2 * edge));
+    const glow = 0.3 * Math.max(0, Math.exp(-d * d / (2 * 1.8 ** 2)) - Math.exp(-(4.5 ** 2) / (2 * 1.8 ** 2)));
+    output[i] = color.r;
+    output[i + 1] = color.g;
+    output[i + 2] = color.b;
+    output[i + 3] = image.data[owners[p] * 4 + 3] * (outline + glow * (1 - outline));
   }
   return output;
 }

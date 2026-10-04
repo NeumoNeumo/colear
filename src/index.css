@@ -42,6 +42,7 @@ code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
 .image-scroll { overflow: auto; max-height: 65vh; min-height: 180px; padding: 24px; background-color: var(--surface); border-block: 1px solid var(--border); }
 .canvas-wrap { position: relative; margin: auto; background-color: var(--panel); background-image: linear-gradient(45deg, var(--checker) 25%, transparent 25%), linear-gradient(-45deg, var(--checker) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--checker) 75%), linear-gradient(-45deg, transparent 75%, var(--checker) 75%); background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0; box-shadow: 0 5px 22px #00000012; }
 canvas { display: block; max-width: none; cursor: crosshair; touch-action: none; }
+.highlight-layer { position: absolute; inset: 0; pointer-events: none; }
 .selection-rectangle { position: absolute; pointer-events: none; border: 2px solid #485ee8; background: #485ee830; box-shadow: 0 0 0 1px white; }
 .sample-marker { position: absolute; width: 15px; height: 15px; border: 3px solid; outline: 1px solid white; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 0 0 2px #182033; }
 .magnifier { position: absolute; width: 110px; height: 110px; display: grid; grid-template-columns: repeat(9, 1fr); grid-template-rows: repeat(9, 1fr); border: 1px solid white; outline: 1px solid #182033; box-shadow: 0 3px 12px #0005; pointer-events: none; background: var(--panel); }

@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import draggable from 'vuedraggable';
-import { colorName, detectBackground, detectText, fromHex, hex, highlight, mainColors, paletteMatch, pickNearby, pixel, rectangleClusters, similar } from '../lib/colors';
+import { colorName, detectBackground, fromHex, hex, highlightLayer, mainColors, paletteMatch, pickNearby, pixel, rectangleClusters, similar } from '../lib/colors';
 import type { Color, Point, Region } from '../lib/colors';
 import { defaults, readSettings, settingsKey } from '../lib/settings';
 
 interface PaletteItem { id: number; color: Color; range: number }
-type Tool = 'pick' | 'rectangle' | 'background' | 'text' | 'remove';
+type Tool = 'pick' | 'rectangle' | 'background' | 'remove';
 const screenRatio = window.devicePixelRatio || 1;
 const initial = defaults(screenRatio, window.matchMedia('(prefers-color-scheme: dark)').matches);
 let restored = initial;
 try { restored = readSettings(localStorage.getItem(settingsKey), initial); } catch { /* Storage may be unavailable. */ }
 const settings = reactive(restored);
 const canvas = ref<HTMLCanvasElement | null>(null);
+const highlightCanvas = ref<HTMLCanvasElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
 const original = shallowRef<ImageData | null>(null);
 const palette = ref<PaletteItem[]>([]);
 const selectedId = ref<number | null>(null);
@@ -53,14 +55,13 @@ const instructions = computed(() => ({
   pick: 'Click near a line to add its color. If a similar color is in the palette, it is selected and highlighted.',
   rectangle: 'Drag a rectangle to collect colors. Blended edge shades are merged; background is excluded.',
   background: 'Click the exact background pixel to set the background color.',
-  text: 'Click the exact text pixel to set the text color.',
   remove: 'Click a palette color to remove it. Click the minus button again to finish.',
 }[tool.value]));
 
 watch(() => settings.dark, dark => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; }, { immediate: true });
 watch(settings, () => { saved.value = false; }, { deep: true, flush: 'sync' });
-watch([selected, () => selected.value?.range], scheduleRender);
-watch(() => [settings.background, settings.text, settings.smartPick, settings.snapRadius, settings.scale], () => { hover.value = null; });
+watch([selected, () => selected.value?.range, () => settings.background, () => settings.scale], scheduleRender);
+watch(() => [settings.background, settings.smartPick, settings.snapRadius, settings.scale], () => { hover.value = null; });
 watch(tool, () => { hover.value = null; dragStart.value = dragEnd.value = null; });
 
 function scheduleRender() {
@@ -71,8 +72,14 @@ function render() {
   const source = original.value;
   const context = canvas.value?.getContext('2d');
   if (!source || !context) return;
-  const output = selected.value ? new ImageData(highlight(source, selected.value.color, selected.value.range), source.width, source.height) : source;
-  context.putImageData(output, 0, 0);
+  context.putImageData(source, 0, 0);
+  const overlay = highlightCanvas.value?.getContext('2d');
+  if (!overlay) return;
+  overlay.clearRect(0, 0, source.width, source.height);
+  if (selected.value) {
+    const layer = highlightLayer(source, selected.value.color, selected.value.range, fromHex(settings.background), settings.scale);
+    overlay.putImageData(new ImageData(layer, source.width, source.height), 0, 0);
+  }
 }
 function addColors(colors: Color[]): number {
   let count = 0;
@@ -88,31 +95,36 @@ function addColors(colors: Color[]): number {
 function detectPalette() {
   if (!original.value) return;
   const excluded = [fromHex(settings.background)];
-  if (settings.excludeText) excluded.push(fromHex(settings.text));
   palette.value = [];
   selectedId.value = null;
   addColors(mainColors(original.value, excluded));
   status.value = `Detected ${palette.value.length} main colors. Use a rectangle to add more.`;
 }
-function detectRoles() {
+function detectBackgroundColor() {
   if (!original.value) return;
   if (settings.backgroundAuto) settings.background = hex(detectBackground(original.value));
-  if (settings.textAuto) settings.text = hex(detectText(original.value, fromHex(settings.background)));
 }
-function updateAuto(role: 'background' | 'text', event: Event) {
-  const checked = (event.target as HTMLInputElement).checked;
-  if (role === 'background') settings.backgroundAuto = checked;
-  else settings.textAuto = checked;
-  detectRoles();
+function updateAuto(event: Event) {
+  settings.backgroundAuto = (event.target as HTMLInputElement).checked;
+  detectBackgroundColor();
 }
-function changeRole(role: 'background' | 'text', value: string) {
-  settings[role] = value;
-  if (role === 'background') { settings.backgroundAuto = false; if (settings.textAuto) detectRoles(); }
-  else settings.textAuto = false;
+function changeBackground(value: string) {
+  settings.background = value;
+  settings.backgroundAuto = false;
+}
+function chooseTool(value: Tool) {
+  tool.value = value;
+  if (tool.value !== 'pick') selectedId.value = null;
 }
 function setTool(value: Tool) {
-  tool.value = tool.value === value ? 'pick' : value;
-  if (tool.value !== 'pick') selectedId.value = null;
+  chooseTool(tool.value === value ? 'pick' : value);
+}
+function showOriginal() {
+  selectedId.value = null;
+  tool.value = 'pick';
+  hover.value = null;
+  cancelDrag();
+  status.value = 'Showing the original image.';
 }
 function removeColor(item: PaletteItem) {
   palette.value = palette.value.filter(entry => entry.id !== item.id);
@@ -152,7 +164,7 @@ function pointFromEvent(event: PointerEvent): Point | null {
 }
 function sample(point: Point) {
   if (!original.value) return null;
-  return pickNearby(original.value, point, tool.value === 'pick' && settings.smartPick ? settings.snapRadius * settings.scale : 0, [fromHex(settings.background), fromHex(settings.text)]);
+  return pickNearby(original.value, point, tool.value === 'pick' && settings.smartPick ? settings.snapRadius * settings.scale : 0, [fromHex(settings.background)]);
 }
 function pointerMove(event: PointerEvent) {
   const point = pointFromEvent(event);
@@ -169,32 +181,21 @@ function pointerDown(event: PointerEvent) {
     canvas.value?.setPointerCapture(event.pointerId);
     return;
   }
-  if (tool.value === 'pick' && selected.value) {
-    const clickedColor = pixel(original.value, point.x, point.y);
-    // A background click dismisses the highlight before nearby picking can
-    // snap it to a line. Always inspect the unmodified source image.
-    if (clickedColor && similar(clickedColor, fromHex(settings.background))) {
-      selectedId.value = null;
-      hover.value = null;
-      status.value = 'Showing the original image.';
-      return;
-    }
-  }
   const result = sample(point);
   if (!result) { status.value = 'This pixel is transparent. Choose a visible color.'; return; }
-  if (tool.value === 'background' || tool.value === 'text') {
-    changeRole(tool.value, hex(result.color));
-    status.value = `${tool.value === 'background' ? 'Background' : 'Text'} set to ${colorName(result.color)} (${hex(result.color)}).`;
+  if (tool.value === 'background') {
+    changeBackground(hex(result.color));
+    status.value = `Background set to ${colorName(result.color)} (${hex(result.color)}).`;
     tool.value = 'pick';
   } else {
     if (similar(result.color, fromHex(settings.background))) {
-      selectedId.value = null;
-      hover.value = null;
-      status.value = 'Background colors are excluded from the palette.';
+      if (selected.value) showOriginal();
+      else { hover.value = null; status.value = 'Background colors are excluded from the palette.'; }
       return;
     }
     const match = paletteMatch(palette.value, result.color);
     if (match) {
+      if (selectedId.value === match.id) { showOriginal(); return; }
       selectedId.value = match.id;
       status.value = `Selected ${colorName(match.color)} (${hex(match.color)}) from the palette.`;
     } else {
@@ -211,7 +212,6 @@ function pointerUp(event: PointerEvent) {
   const area = region.value;
   if (area && area.width >= 2 && area.height >= 2) {
     const excluded = [fromHex(settings.background)];
-    if (settings.excludeText) excluded.push(fromHex(settings.text));
     const count = addColors(rectangleClusters(original.value, area, excluded).map(entry => entry.color));
     status.value = count ? `Added ${count} color clusters from the rectangle.` : 'No new colors in this rectangle after exclusions and duplicates.';
   } else status.value = 'Drag a larger rectangle to extract its colors.';
@@ -239,7 +239,7 @@ async function loadImage(url: string, name: string, revoke = false) {
     original.value = pixels;
     fileName.value = name;
     selectedId.value = null; tool.value = 'pick'; hover.value = null; cancelDrag();
-    detectRoles(); detectPalette();
+    detectBackgroundColor(); detectPalette();
     await nextTick(); render();
   } catch {
     if (id === requestId) error.value = 'Could not open this image. Try a PNG, JPEG, WebP, or another supported image.';
@@ -268,8 +268,24 @@ function drop(event: DragEvent) {
 }
 function keydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement | null;
-  if (target?.closest('input, textarea, select, button, [contenteditable="true"]') || event.ctrlKey || event.metaKey || event.altKey) return;
-  if (event.key === 'Escape') { tool.value = 'pick'; selectedId.value = null; cancelDrag(); }
+  if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key === 'Escape') { event.preventDefault(); showOriginal(); return; }
+  if (target?.closest('input, textarea, select') || target?.isContentEditable) return;
+  const shortcuts: Record<string, () => void> = {
+    a: () => chooseTool('pick'),
+    A: () => chooseTool('rectangle'),
+    b: () => chooseTool('background'),
+    d: detectPalette,
+    '-': handleMinus,
+    c: clearPalette,
+    t: () => { settings.dark = !settings.dark; },
+    s: saveSettings,
+    u: () => fileInput.value?.click(),
+    r: () => { settings.scale = defaults(screenRatio).scale; },
+    R: resetSettings,
+  };
+  const action = shortcuts[event.key];
+  if (action) { event.preventDefault(); action(); return; }
   if (/^[1-9]$/.test(event.key)) {
     const item = palette.value[Number(event.key) - 1];
     if (item) { event.preventDefault(); paletteClick(item); }
@@ -282,7 +298,7 @@ function saveSettings() {
 function resetSettings() {
   Object.assign(settings, defaults(window.devicePixelRatio, window.matchMedia('(prefers-color-scheme: dark)').matches));
   for (const item of palette.value) item.range = settings.defaultRange;
-  detectRoles();
+  detectBackgroundColor();
   status.value = 'Default settings restored. Use Save settings to keep them.';
 }
 onMounted(() => {
@@ -298,23 +314,24 @@ onBeforeUnmount(() => { requestId++; cancelAnimationFrame(frame); document.remov
     <header class="app-header">
       <div><p class="eyebrow">A clearer view of color</p><h1>Colear<span class="brand-dot">.</span></h1><p class="subtitle">Find, collect, and highlight the colors that matter.</p></div>
       <div class="header-actions">
-        <button :aria-pressed="settings.dark" @click="settings.dark = !settings.dark">{{ settings.dark ? '☀ Light mode' : '☾ Dark mode' }}</button>
-        <button class="primary" @click="saveSettings">{{ saved ? '✓ Settings saved' : 'Save settings' }}</button>
+        <button title="Toggle light / dark mode (t)" aria-keyshortcuts="t" :aria-pressed="settings.dark" @click="settings.dark = !settings.dark">{{ settings.dark ? '☀ Light mode' : '☾ Dark mode' }}</button>
+        <button class="primary" title="Save settings (s)" aria-keyshortcuts="s" @click="saveSettings">{{ saved ? '✓ Settings saved' : 'Save settings' }}</button>
       </div>
     </header>
 
     <div class="workbench">
         <section class="panel image-panel" aria-label="Image workspace">
-          <div class="panel-heading"><div><h2>Image workspace</h2><p>{{ fileName }}<span v-if="original"> · {{ original.width }} × {{ original.height }} pixels</span></p></div><label class="button primary upload">Upload image<input type="file" accept="image/*" @change="fileChange"></label></div>
+          <div class="panel-heading"><div><h2>Image workspace</h2><p>{{ fileName }}<span v-if="original"> · {{ original.width }} × {{ original.height }} pixels</span></p></div><label class="button primary upload" title="Upload image (u)">Upload image<input ref="fileInput" type="file" accept="image/*" aria-keyshortcuts="u" @change="fileChange"></label></div>
           <div class="toolbar" role="group" aria-label="Image tools">
-            <button :aria-pressed="tool === 'pick'" @click="tool = 'pick'">↗ Pick color</button>
-            <button :aria-pressed="tool === 'rectangle'" @click="setTool('rectangle')">▧ Bulk add</button>
-            <button :disabled="!selected" @click="selectedId = null">Show original</button>
+            <button title="Pick color (a)" aria-keyshortcuts="a" :aria-pressed="tool === 'pick'" @click="chooseTool('pick')">↗ Pick color</button>
+            <button title="Bulk add (A / Shift+A)" aria-keyshortcuts="Shift+A" :aria-pressed="tool === 'rectangle'" @click="setTool('rectangle')">▧ Bulk add</button>
+            <button title="Show original (Esc)" aria-keyshortcuts="Escape" :disabled="!selected && tool === 'pick'" @click="showOriginal">Show original</button>
             <span class="toolbar-note">Paste with Ctrl / ⌘ V</span>
           </div>
           <div class="image-scroll" :aria-busy="loading">
             <div class="canvas-wrap" :style="imageStyle">
-              <canvas ref="canvas" :width="original?.width ?? 600" :height="original?.height ?? 400" :style="imageStyle" aria-label="Image. Click to pick a color or drag to select a rectangle." @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelDrag" @lostpointercapture="cancelDrag" @pointerleave="hover = null" />
+              <canvas ref="canvas" class="image-source" :width="original?.width ?? 600" :height="original?.height ?? 400" :style="imageStyle" aria-label="Image. Click to pick a color or drag to select a rectangle." @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="cancelDrag" @lostpointercapture="cancelDrag" @pointerleave="hover = null" />
+              <canvas ref="highlightCanvas" v-show="selected" class="highlight-layer" :width="original?.width ?? 600" :height="original?.height ?? 400" :style="imageStyle" aria-hidden="true" />
               <div v-if="region" class="selection-rectangle" :style="rectangleStyle" />
               <div v-if="hover" class="sample-marker" :style="{ left: `${hover.point.x / settings.scale}px`, top: `${hover.point.y / settings.scale}px`, borderColor: hex(hover.color) }" />
               <div v-if="hover" class="magnifier" :style="magnifierStyle" aria-hidden="true"><span v-for="(color, index) in magnifiedPixels" :key="index" :class="{ center: index === 40 }" :style="{ background: color }" /></div>
@@ -324,10 +341,10 @@ onBeforeUnmount(() => { requestId++; cancelAnimationFrame(frame); document.remov
         </section>
 
         <section class="panel palette-panel" aria-label="Color palette">
-          <div class="panel-heading"><div><h2>Your palette <span class="count">{{ palette.length }}</span></h2><p>Click to highlight · drag to reorder · keys 1–9 to select</p></div><div class="compact-actions"><button :disabled="!original" @click="detectPalette">Detect main colors</button><button :aria-label="selected ? 'Remove selected color' : 'Remove colors'" :title="selected ? 'Remove selected color' : 'Toggle remove mode'" :aria-pressed="tool === 'remove'" @click="handleMinus">−</button><button :disabled="!palette.length" @click="clearPalette">Clear</button></div></div>
+          <div class="panel-heading"><div><h2>Your palette <span class="count">{{ palette.length }}</span></h2><p>Click to highlight · drag to reorder · keys 1–9 to select</p></div><div class="compact-actions"><button title="Detect main colors (d)" aria-keyshortcuts="d" :disabled="!original" @click="detectPalette">Detect main colors</button><button :aria-label="selected ? 'Remove selected color' : 'Remove colors'" :title="selected ? 'Remove selected color (−)' : 'Toggle remove mode (−)'" aria-keyshortcuts="-" :aria-pressed="tool === 'remove'" @click="handleMinus">−</button><button title="Clear palette (c)" aria-keyshortcuts="c" :disabled="!palette.length" @click="clearPalette">Clear</button></div></div>
           <draggable v-model="palette" item-key="id" class="palette-grid" :animation="150" :disabled="tool === 'remove'" :delay="150" :delay-on-touch-only="true" ghost-class="ghost">
             <template #item="{ element, index }: { element: PaletteItem; index: number }">
-              <button class="color-card" :class="{ selected: selectedId === element.id, removing: tool === 'remove' }" :aria-pressed="selectedId === element.id" :aria-label="`${tool === 'remove' ? 'Remove' : 'Highlight'} ${colorName(element.color)} ${hex(element.color)}`" @click="paletteClick(element)">
+              <button class="color-card" :class="{ selected: selectedId === element.id, removing: tool === 'remove' }" :aria-pressed="selectedId === element.id" :aria-label="`${tool === 'remove' ? 'Remove' : 'Highlight'} ${colorName(element.color)} ${hex(element.color)}`" :title="`${tool === 'remove' ? 'Remove' : 'Highlight'} ${colorName(element.color)}${index < 9 ? ` (${index + 1})` : ''}`" :aria-keyshortcuts="index < 9 ? String(index + 1) : undefined" @click="paletteClick(element)">
                 <span class="swatch" :style="{ background: hex(element.color) }"><span class="swatch-index">{{ tool === 'remove' ? '−' : index < 9 ? index + 1 : '' }}</span></span>
                 <span class="color-label">{{ colorName(element.color) }}</span><span class="color-hex">{{ hex(element.color) }}</span>
               </button>
@@ -337,32 +354,30 @@ onBeforeUnmount(() => { requestId++; cancelAnimationFrame(frame); document.remov
           <div class="range-editor">
             <div><h3>{{ selected ? colorName(selected.color) : 'Highlight range' }} <code v-if="selected">{{ hex(selected.color) }}</code></h3><p>{{ selected ? 'Adjust how closely a pixel must match. The highlight updates live.' : 'Select a palette color to adjust its own detection range.' }}</p></div>
             <div class="range-controls"><input aria-label="Highlight range slider" type="range" min="0" max="255" :value="selected?.range ?? settings.defaultRange" :disabled="!selected" @input="updateRange"><input aria-label="Highlight range" class="number-input" type="number" min="0" max="255" :value="selected?.range ?? settings.defaultRange" :disabled="!selected" @input="updateRange"></div>
-            <p class="hint">0 = exact match · 255 = all colors. Color names are approximate.</p>
           </div>
         </section>
       <div class="workspace-feedback"><p class="status" role="status">{{ status }}</p><p v-if="error" class="error" role="alert">{{ error }}</p></div>
 
       <section class="settings-grid" aria-label="Detection and display settings">
         <section class="panel settings-panel"><div class="section-heading"><span class="section-number">01</span><h2>Color picking</h2></div>
-          <label class="check-row"><input v-model="settings.smartPick" type="checkbox">Smart nearby selection</label><p class="hint">Find the solid color inside a nearby line, avoiding blended edges, background, and text.</p>
+          <label class="check-row"><input v-model="settings.smartPick" type="checkbox">Smart nearby selection</label><p class="hint">Find the solid color inside a nearby line, avoiding blended edges and background.</p>
           <label class="field-label" for="snap-radius">Search radius <span>{{ settings.snapRadius }} px</span></label><input id="snap-radius" type="range" min="1" max="32" :disabled="!settings.smartPick" :value="settings.snapRadius" @input="settings.snapRadius = numeric($event, settings.snapRadius, 1, 32)">
           <div class="field-row"><label for="default-range">Default highlight range</label><input id="default-range" class="number-input" type="number" min="0" max="255" :value="settings.defaultRange" @input="settings.defaultRange = numeric($event, settings.defaultRange, 0, 255)"></div>
-          <label class="check-row"><input v-model="settings.excludeText" type="checkbox">Exclude text color from detection</label><p class="hint">Applies to <code>Detect main colors</code> and <code>Bulk add</code>. Background is always excluded.</p>
+          <p class="hint">Background is excluded from picking and detection.</p>
         </section>
 
-        <section class="panel settings-panel"><div class="section-heading"><span class="section-number">02</span><h2>Background &amp; text</h2></div>
-          <div class="role-block"><h3>Background</h3><div class="role-color"><input aria-label="Background color" type="color" :value="settings.background" @input="changeRole('background', ($event.target as HTMLInputElement).value)"><code>{{ settings.background }}</code><button :aria-pressed="tool === 'background'" @click="setTool('background')">Pick pixel</button></div><label class="check-row"><input type="checkbox" :checked="settings.backgroundAuto" @change="updateAuto('background', $event)">Auto-detect most common color</label></div>
-          <div class="role-block"><h3>Text</h3><div class="role-color"><input aria-label="Text color" type="color" :value="settings.text" @input="changeRole('text', ($event.target as HTMLInputElement).value)"><code>{{ settings.text }}</code><button :aria-pressed="tool === 'text'" @click="setTool('text')">Pick pixel</button></div><label class="check-row"><input type="checkbox" :checked="settings.textAuto" @change="updateAuto('text', $event)">Auto-detect text color</label></div>
-          <p class="hint">Text defaults to black. Automatic text detection estimates a common contrasting color; use Pick pixel to refine it.</p>
+        <section class="panel settings-panel"><div class="section-heading"><span class="section-number">02</span><h2>Background</h2></div>
+          <div class="role-block"><div class="role-color"><input aria-label="Background color" type="color" :value="settings.background" @input="changeBackground(($event.target as HTMLInputElement).value)"><code>{{ settings.background }}</code><button title="Pick background pixel (b)" aria-keyshortcuts="b" :aria-pressed="tool === 'background'" @click="setTool('background')">Pick pixel</button></div><label class="check-row"><input type="checkbox" :checked="settings.backgroundAuto" @change="updateAuto">Auto-detect most common color</label></div>
+          <p class="hint">Use the most common image color or sample the background manually. Background colors are never added to the palette.</p>
         </section>
 
         <section class="panel settings-panel"><div class="section-heading"><span class="section-number">03</span><h2>Image scale</h2></div>
           <div class="field-row"><label for="image-scale">Divide image size by</label><input id="image-scale" class="number-input" type="number" min="0.25" max="8" step="0.25" :value="settings.scale" @input="settings.scale = numeric($event, settings.scale, 0.25, 8)"></div>
           <input aria-label="Image scale slider" type="range" min="0.25" max="8" step="0.25" :value="settings.scale" @input="settings.scale = numeric($event, settings.scale, 0.25, 8)">
-          <button class="full-width" @click="settings.scale = defaults(screenRatio).scale">Use screen pixel ratio</button>
-          <p v-if="original" class="hint">Displayed at {{ Math.round(original.width / settings.scale) }} × {{ Math.round(original.height / settings.scale) }} CSS pixels. All original image pixels are retained.</p>
+          <button class="full-width" title="Use screen pixel ratio (r)" aria-keyshortcuts="r" @click="settings.scale = defaults(screenRatio).scale">Use screen pixel ratio</button>
+          <p v-if="original" class="hint">Displayed at {{ Math.round(original.width / settings.scale) }} × {{ Math.round(original.height / settings.scale) }} CSS pixels.</p>
         </section>
-        <div class="settings-footer"><p class="settings-note">Save settings to remember your theme, picking options, scale, background, text, and per-color ranges in this browser. Images are not stored.</p><button class="reset-button" @click="resetSettings">Restore defaults</button></div>
+        <div class="settings-footer"><p class="settings-note">Save settings to remember your theme, picking options, scale, background, and per-color ranges in this browser. Images are not stored. Hover over buttons to see their shortcuts.</p><button class="reset-button" title="Restore defaults (Shift+R)" aria-keyshortcuts="Shift+R" @click="resetSettings">Restore defaults</button></div>
       </section>
     </div>
   </main>
