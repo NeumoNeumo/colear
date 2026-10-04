@@ -248,9 +248,11 @@ function handleColorBlk(order: number) {
     case "normal":
       clickColorBlk(order);
       break;
-    case "remove":
-      paletteData.value.splice(order, 1);
+    case "remove": {
+      const index = order2idx(order);
+      if (index !== -1) paletteData.value.splice(index, 1);
       break;
+    }
   }
 }
 
