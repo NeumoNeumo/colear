@@ -1,16 +1,16 @@
-name: Deploy to GitHub Pages
+name: Build and deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, deployment]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: github-pages
-  cancel-in-progress: false
+  group: build-and-deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/deployment' }}
 
 jobs:
   build:
@@ -44,12 +44,13 @@ jobs:
         run: npm run build
 
       - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/deployment'
         uses: actions/upload-pages-artifact@v4
         with:
           path: dist
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/deployment'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

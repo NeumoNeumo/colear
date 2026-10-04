@@ -129,15 +129,50 @@ needed for image processing or saved preferences.
 
 ## Automatic deployment
 
-The [Deploy to GitHub Pages](.github/workflows/deploy-pages.yml) workflow installs
-dependencies, runs tests, builds the site, and deploys `dist` after each push to
-`main`. You can also run it manually from the repository's **Actions** tab;
-only `main` can deploy.
+The [Build and deploy](.github/workflows/deploy-pages.yml) workflow uses two
+source branches:
+
+- `main`: installs dependencies, runs tests, and builds the app to validate changes.
+  It does not upload a Pages artifact or deploy.
+- `deployment`: runs the same checks, then uploads `dist` and publishes to
+  GitHub Pages only if those checks succeed.
+
+You can also run the workflow manually from the repository's **Actions** tab.
+Select `deployment` to publish; running it on `main` only validates the code.
+Builds on `main` and releases on `deployment` run independently.
 
 Before the first deployment, open **Settings → Pages → Build and deployment**
 and set **Source** to **GitHub Actions**, as described in the
 [GitHub Pages setup guide](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site).
 The workflow uses GitHub's built-in token, so no additional secrets are needed.
+In **Settings → Environments → github-pages**, ensure deployment branch rules
+allow `deployment` (update any existing rule that only allows `main`). See
+[GitHub's environment branch rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#deployment-branches-and-tags).
+
+After committing this workflow on `main`, create the source deployment branch
+for the first release:
+
+```sh
+git switch main
+git pull --ff-only origin main
+git switch -c deployment
+git push -u origin deployment
+git switch main
+```
+
+For later releases, merge the tested changes into `deployment` and push:
+
+```sh
+git switch deployment
+git pull --ff-only origin deployment
+git merge main
+git push origin deployment
+git switch main
+```
+
+The `deployment` branch contains source code and this workflow. Built files
+are uploaded as a Pages artifact; the existing `gh-pages` branch is not used
+by this workflow.
 
 The site is published at <https://neumoneumo.github.io/colear/>. Vite's
 `base: '/colear/'` setting keeps image and asset URLs under the repository path.
