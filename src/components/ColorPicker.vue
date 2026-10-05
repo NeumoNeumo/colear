@@ -98,7 +98,7 @@ function detectPalette() {
   palette.value = [];
   selectedId.value = null;
   addColors(mainColors(original.value, excluded));
-  status.value = `Detected ${palette.value.length} main colors. Use a rectangle to add more.`;
+  status.value = `Detected ${palette.value.length} main colors.`;
 }
 function detectBackgroundColor() {
   if (!original.value) return;
