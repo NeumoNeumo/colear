@@ -4,7 +4,8 @@ Are you often troubled by colors in diagrams or illustrations in papers because
 of your color vision deficiency? `Colear` aims to help you clearly see those
 lines or blocks.
 
-Use it online on https://neumoneumo.github.io/colear/
+Use it online on https://neumoneumo.github.io/colear/  
+Watch how to use it on https://www.youtube.com/watch?v=qYg3AeByF5s or https://www.bilibili.com/video/BV1ihHM66EmM
 
 ## Features
 
