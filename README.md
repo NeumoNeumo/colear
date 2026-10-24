@@ -99,6 +99,7 @@ typing in a field; **Esc** also exits highlighting while a field is focused.
 | `A` (`Shift+A`) | Bulk add |
 | `Esc` | Show original and return to Pick color |
 | `1`–`9` | Select the palette color in that position |
+| `<` / `>` | Move the selected color one position left / right, keeping it selected |
 | `-` | Remove selected color, or toggle removal mode |
 | `d` | Detect main colors |
 | `c` | Clear palette |
@@ -108,6 +109,10 @@ typing in a field; **Esc** also exits highlighting while a field is focused.
 | `s` | Save settings |
 | `r` | Use screen pixel ratio |
 | `R` (`Shift+R`) | Restore default settings |
+
+Palette movement stops at the first or last color. On a US keyboard, use
+**Shift+,** for `<` and **Shift+.** for `>`. These shortcuts do not reorder
+colors while you are editing a field.
 
 ## Development
 
