@@ -143,6 +143,14 @@ function paletteClick(item: PaletteItem) {
     selectedId.value = selectedId.value === item.id ? null : item.id;
   }
 }
+function moveSelectedColor(direction: -1 | 1) {
+  const index = palette.value.findIndex(item => item.id === selectedId.value);
+  const destination = index + direction;
+  if (index < 0 || destination < 0 || destination >= palette.value.length) return;
+  const [item] = palette.value.splice(index, 1);
+  palette.value.splice(destination, 0, item);
+  status.value = `Moved ${colorName(item.color)} to position ${destination + 1}.`;
+}
 function clearPalette() {
   palette.value = []; selectedId.value = null; tool.value = 'pick';
   status.value = 'Palette cleared. Click the image or drag a rectangle to add colors.';
@@ -277,6 +285,8 @@ function keydown(event: KeyboardEvent) {
     b: () => chooseTool('background'),
     d: detectPalette,
     '-': handleMinus,
+    '<': () => moveSelectedColor(-1),
+    '>': () => moveSelectedColor(1),
     c: clearPalette,
     t: () => { settings.dark = !settings.dark; },
     s: saveSettings,
@@ -341,7 +351,7 @@ onBeforeUnmount(() => { requestId++; cancelAnimationFrame(frame); document.remov
         </section>
 
         <section class="panel palette-panel" aria-label="Color palette">
-          <div class="panel-heading"><div><h2>Your palette <span class="count">{{ palette.length }}</span></h2><p>Click to highlight · drag to reorder · keys 1–9 to select</p></div><div class="compact-actions"><button title="Detect main colors (d)" aria-keyshortcuts="d" :disabled="!original" @click="detectPalette">Detect main colors</button><button :aria-label="selected ? 'Remove selected color' : 'Remove colors'" :title="selected ? 'Remove selected color (−)' : 'Toggle remove mode (−)'" aria-keyshortcuts="-" :aria-pressed="tool === 'remove'" @click="handleMinus">−</button><button title="Clear palette (c)" aria-keyshortcuts="c" :disabled="!palette.length" @click="clearPalette">Clear</button></div></div>
+          <div class="panel-heading"><div><h2>Your palette <span class="count">{{ palette.length }}</span></h2><p>Click to highlight · drag to reorder · keys 1–9 to select · &lt; / &gt; to move selected</p></div><div class="compact-actions"><button title="Detect main colors (d)" aria-keyshortcuts="d" :disabled="!original" @click="detectPalette">Detect main colors</button><button :aria-label="selected ? 'Remove selected color' : 'Remove colors'" :title="selected ? 'Remove selected color (−)' : 'Toggle remove mode (−)'" aria-keyshortcuts="-" :aria-pressed="tool === 'remove'" @click="handleMinus">−</button><button title="Clear palette (c)" aria-keyshortcuts="c" :disabled="!palette.length" @click="clearPalette">Clear</button></div></div>
           <draggable v-model="palette" item-key="id" class="palette-grid" :animation="150" :disabled="tool === 'remove'" :delay="150" :delay-on-touch-only="true" ghost-class="ghost">
             <template #item="{ element, index }: { element: PaletteItem; index: number }">
               <button class="color-card" :class="{ selected: selectedId === element.id, removing: tool === 'remove' }" :aria-pressed="selectedId === element.id" :aria-label="`${tool === 'remove' ? 'Remove' : 'Highlight'} ${colorName(element.color)} ${hex(element.color)}`" :title="`${tool === 'remove' ? 'Remove' : 'Highlight'} ${colorName(element.color)}${index < 9 ? ` (${index + 1})` : ''}`" :aria-keyshortcuts="index < 9 ? String(index + 1) : undefined" @click="paletteClick(element)">
